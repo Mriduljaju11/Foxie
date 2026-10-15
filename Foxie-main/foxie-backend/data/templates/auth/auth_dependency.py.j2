@@ -1,0 +1,103 @@
+# This is our standard for handling user authentication.
+# All protected endpoints MUST use this 'get_current_user' dependency.
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+from pydantic import BaseModel
+
+from app.core.config import settings
+from app.models.user import User
+
+{% if database_type == "sql" %}
+from app.database.db_session import get_db
+from sqlalchemy.orm import Session
+{% else %}
+from app.database.db_session_mongodb import get_db
+from motor.motor_asyncio import AsyncIOMotorClient
+{% endif %}
+
+# HTTP Bearer token scheme for Swagger UI authentication
+security = HTTPBearer()
+
+class TokenData(BaseModel):
+    email: str | None = None
+
+{% if database_type == "sql" %}
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+) -> User:
+    """
+    Dependency to get the current user from a JWT token.
+    This is the standard way to protect an endpoint.
+    Uses email as the token subject (OAuth2 standard).
+    Uses proper dependency injection for database session.
+    """
+    from app.crud.user import user as crud_user
+    
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    # Extract token from HTTP Bearer credentials
+    token = credentials.credentials
+    
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        token_data = TokenData(email=email)
+    except JWTError:
+        raise credentials_exception
+    
+    # Fetch user from database by email using dependency injection
+    user = crud_user.get_by_email(db, email=token_data.email)
+    if user is None:
+        raise credentials_exception
+    return user
+{% else %}
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncIOMotorClient = Depends(get_db)
+) -> User:
+    """
+    Dependency to get the current user from a JWT token.
+    This is the standard way to protect an endpoint.
+    Uses email as the token subject (OAuth2 standard).
+    Uses proper async dependency injection for MongoDB database.
+    """
+    from app.crud.user import user as crud_user
+    
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    # Extract token from HTTP Bearer credentials
+    token = credentials.credentials
+    
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        token_data = TokenData(email=email)
+    except JWTError:
+        raise credentials_exception
+    
+    # Fetch user from database by email using async dependency injection
+    user = await crud_user.get_by_email(db, email=token_data.email)
+    if user is None:
+        raise credentials_exception
+    return user
+{% endif %}
+
